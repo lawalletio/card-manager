@@ -18,3 +18,7 @@ keystore.properties
 *.keystore
 *.jks
 *.p12
+
+# Secrets — e.g. SIGN_WITH (Nostr nsec) for zapstore publishing
+.env
+.env.*
