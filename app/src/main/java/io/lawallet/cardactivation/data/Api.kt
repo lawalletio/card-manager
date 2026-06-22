@@ -57,7 +57,7 @@ object Api {
                 id = o.optString("id").ifBlank { id },
                 imageUrl = design?.optString("imageUrl")?.ifBlank { null },
                 designName = design?.optString("description")?.ifBlank { null },
-                status = if (assigned) "Activada" else "Sin activar",
+                status = if (assigned) "Activated" else "Not activated",
                 lightningAddress = username?.let { "$it@${AuthStore.host()}" },
                 kind = o.optString("kind").ifBlank { null },
             )
@@ -73,14 +73,14 @@ object Api {
                         .post(body),
                 )
             val qr = o.optString("qrPayload").ifBlank { null }
-                ?: throw ApiException("Respuesta de activación sin qrPayload.")
+                ?: throw ApiException("Activation response missing qrPayload.")
             ActivationToken(qrPayload = qr, expiresAt = o.optString("expiresAt").ifBlank { null })
         }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     private fun request(builder: Request.Builder): JSONObject {
-        val token = AuthStore.jwt ?: throw ApiException("No autenticado.")
+        val token = AuthStore.jwt ?: throw ApiException("Not authenticated.")
         val req =
             builder
                 .header("Content-Type", "application/json")
@@ -91,18 +91,18 @@ object Api {
             val json = runCatching { JSONObject(text) }.getOrNull()
             if (res.code == 401) {
                 AuthStore.logout()
-                throw ApiException("Sesión expirada — escaneá un token nuevo.", 401)
+                throw ApiException("Session expired — scan a new token.", 401)
             }
             if (!res.isSuccessful) {
                 val msg =
                     when (res.code) {
-                        404 -> "Tarjeta no registrada."
-                        409 -> "Se acaba de emitir otro QR — reintentá."
+                        404 -> "Card not registered."
+                        409 -> "Another QR was just issued — try again."
                         else -> json?.optString("message")?.ifBlank { null } ?: "Error (HTTP ${res.code})."
                     }
                 throw ApiException(msg, res.code)
             }
-            return json ?: throw ApiException("Respuesta inesperada del servidor.")
+            return json ?: throw ApiException("Unexpected server response.")
         }
     }
 }

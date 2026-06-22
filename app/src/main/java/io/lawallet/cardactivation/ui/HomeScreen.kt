@@ -16,9 +16,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -42,6 +46,7 @@ import io.lawallet.cardactivation.data.ActivationToken
 import io.lawallet.cardactivation.data.Api
 import io.lawallet.cardactivation.data.AuthStore
 import io.lawallet.cardactivation.data.CardDetail
+import io.lawallet.cardactivation.data.Settings
 import io.lawallet.cardactivation.pos.ZcsPrinter
 import io.lawallet.cardactivation.ui.components.FloatingCard
 import io.lawallet.cardactivation.ui.components.LottieLoader
@@ -69,20 +74,24 @@ private sealed interface Flow {
 
     data object Activating : Flow
 
-    data class Qr(val card: CardDetail, val token: ActivationToken) : Flow
+    data class Qr(val card: CardDetail, val token: ActivationToken, val autoStart: Boolean = false) : Flow
 
     data class Failed(val message: String) : Flow
+
+    data object BlankCard : Flow
 }
 
 @Composable
 fun HomeScreen(
     cardUrls: SharedFlow<String>,
+    blankCards: SharedFlow<Unit>,
     nfcAvailable: Boolean,
     onLogout: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var flow by remember { mutableStateOf<Flow>(Flow.Scanning) }
     val flowRef = rememberUpdatedState(flow)
+    var showSettings by remember { mutableStateOf(false) }
 
     // A tapped card (real NFC) or a manually-entered url/id → fetch + show.
     fun handleCard(input: String) {
@@ -91,9 +100,16 @@ fun HomeScreen(
         scope.launch {
             flow =
                 try {
-                    Flow.Detail(Api.getCard(input))
+                    val card = Api.getCard(input)
+                    if (Settings.autoPrint.value) {
+                        // Auto-print: skip the detail screen, mint + print right away.
+                        flow = Flow.Activating
+                        Flow.Qr(card, Api.mintActivation(card.id), autoStart = true)
+                    } else {
+                        Flow.Detail(card)
+                    }
                 } catch (e: Exception) {
-                    Flow.Failed(e.message ?: "No se pudo leer la tarjeta.")
+                    Flow.Failed(e.message ?: "Couldn't read the card.")
                 }
         }
     }
@@ -105,7 +121,7 @@ fun HomeScreen(
                 try {
                     Flow.Qr(card, Api.mintActivation(card.id))
                 } catch (e: Exception) {
-                    Flow.Failed(e.message ?: "No se pudo activar la tarjeta.")
+                    Flow.Failed(e.message ?: "Couldn't activate the card.")
                 }
         }
     }
@@ -113,17 +129,27 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         cardUrls.collect { url -> handleCard(url) }
     }
+    // A tapped tag with no LaWallet lnurl → prompt to install the card first.
+    LaunchedEffect(Unit) {
+        blankCards.collect {
+            if (flowRef.value is Flow.Scanning) flow = Flow.BlankCard
+        }
+    }
 
     GradientBackground {
+        if (showSettings) {
+            SettingsScreen(onClose = { showSettings = false }, onLogout = onLogout)
+            return@GradientBackground
+        }
         when (val f = flow) {
             Flow.Scanning ->
                 ScanningContent(
                     nfcAvailable = nfcAvailable,
                     onManual = { handleCard(it) },
-                    onLogout = onLogout,
+                    onOpenSettings = { showSettings = true },
                 )
 
-            Flow.LoadingCard -> Loading("Leyendo tarjeta…")
+            Flow.LoadingCard -> Loading("Getting card details...")
 
             is Flow.Detail ->
                 CardDetailContent(
@@ -132,17 +158,21 @@ fun HomeScreen(
                     onCancel = { flow = Flow.Scanning },
                 )
 
-            Flow.Activating -> Loading("Generando QR de activación…")
+            Flow.Activating -> Loading("Generating activation QR…")
 
             is Flow.Qr ->
                 QrPrintContent(
                     token = f.token,
+                    autoStart = f.autoStart,
                     onDone = { flow = Flow.Scanning },
                     onCancel = { flow = Flow.Scanning },
                 )
 
             is Flow.Failed ->
                 FailedContent(message = f.message, onBack = { flow = Flow.Scanning })
+
+            Flow.BlankCard ->
+                BlankCardContent(onBack = { flow = Flow.Scanning })
         }
     }
 }
@@ -151,7 +181,7 @@ fun HomeScreen(
 private fun ScanningContent(
     nfcAvailable: Boolean,
     onManual: (String) -> Unit,
-    onLogout: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     var showManual by remember { mutableStateOf(false) }
     var manual by remember { mutableStateOf("") }
@@ -163,11 +193,7 @@ private fun ScanningContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(AuthStore.host(), style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-            Text(
-                "Salir",
-                style = MaterialTheme.typography.titleMedium,
-                color = TealBright,
-                fontWeight = FontWeight.SemiBold,
+            Box(
                 modifier =
                     Modifier
                         .clip(RoundedCornerShape(14.dp))
@@ -175,9 +201,16 @@ private fun ScanningContent(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                        ) { onLogout() }
-                        .padding(horizontal = 22.dp, vertical = 12.dp),
-            )
+                        ) { onOpenSettings() }
+                        .padding(12.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Settings,
+                    contentDescription = "Settings",
+                    tint = TealBright,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
         }
 
         Column(
@@ -185,10 +218,10 @@ private fun ScanningContent(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("Acercá tu tarjeta", style = MaterialTheme.typography.headlineMedium, color = TextPrimary)
+            Text("Tap your card", style = MaterialTheme.typography.headlineMedium, color = TextPrimary)
             Spacer(Modifier.height(8.dp))
             Text(
-                if (nfcAvailable) "Escaneando NFC…" else "NFC no disponible",
+                if (nfcAvailable) "Scanning NFC…" else "NFC unavailable",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TealBright,
             )
@@ -200,20 +233,20 @@ private fun ScanningContent(
                 OutlinedTextField(
                     value = manual,
                     onValueChange = { manual = it },
-                    label = { Text("URL o id de tarjeta") },
+                    label = { Text("Card URL or id") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
                 BrandButton(
-                    text = "Buscar tarjeta",
+                    text = "Find card",
                     onClick = { if (manual.isNotBlank()) onManual(manual) },
                     enabled = manual.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
                 Text(
-                    "Ingresar manualmente",
+                    "Enter manually",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     modifier =
@@ -224,6 +257,13 @@ private fun ScanningContent(
                 )
             }
         }
+
+        Text(
+            rememberAppVersion(),
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary.copy(alpha = 0.6f),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp),
+        )
     }
 }
 
@@ -254,7 +294,7 @@ private fun CardDetailContent(
         FloatingCard(imageUrl = card.imageUrl ?: FALLBACK_IMAGE, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(48.dp))
 
-        Text("Estado", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Text("Status", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(Modifier.height(2.dp))
         Text(card.status, style = MaterialTheme.typography.titleLarge, color = TealBright)
 
@@ -267,15 +307,16 @@ private fun CardDetailContent(
 
         Spacer(Modifier.weight(1f))
 
-        BrandButton("ACTIVAR", onActivate, Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+        BrandButton("ACTIVATE", onActivate, Modifier.fillMaxWidth().padding(horizontal = 8.dp))
         Spacer(Modifier.height(12.dp))
-        GhostButton("Cancelar", onCancel, Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+        GhostButton("Cancel", onCancel, Modifier.fillMaxWidth().padding(horizontal = 8.dp))
     }
 }
 
 @Composable
 private fun QrPrintContent(
     token: ActivationToken,
+    autoStart: Boolean,
     onDone: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -284,12 +325,41 @@ private fun QrPrintContent(
     val translationY = remember { Animatable(0f) }
     val alpha = remember { Animatable(1f) }
 
-    // Render the paper at full width minus a 60px gutter on each side.
-    val sideGutter = with(LocalDensity.current) { 60.toDp() }
+    // Render the paper at full width minus a 69px gutter on each side.
+    val sideGutter = with(LocalDensity.current) { 69.toDp() }
 
-    // Warm the printer while the operator reads the ticket, so the first tap prints
-    // without any init latency.
-    LaunchedEffect(Unit) { ZcsPrinter.prewarm() }
+    // Fire the physical print (immediately, on the printer's own IO scope) and run
+    // the slide-up animation, then return to scanning.
+    fun startPrint() {
+        if (printing) return
+        printing = true
+        ZcsPrinter.printActivationNow(token.qrPayload)
+        scope.launch {
+            coroutineScope {
+                launch {
+                    translationY.animateTo(-1300f, tween(2060, easing = LinearEasing))
+                }
+                launch {
+                    alpha.animateTo(
+                        0f,
+                        keyframes {
+                            durationMillis = 2060
+                            1f at 1439
+                            0f at 2060
+                        },
+                    )
+                }
+            }
+            onDone()
+        }
+    }
+
+    // Warm the printer while the operator reads the ticket; if auto-print is on,
+    // fire immediately so the tap alone prints the activation QR.
+    LaunchedEffect(Unit) {
+        ZcsPrinter.prewarm()
+        if (autoStart) startPrint()
+    }
 
     Box(modifier = Modifier.fillMaxSize().padding(vertical = 24.dp)) {
         Column(
@@ -298,7 +368,7 @@ private fun QrPrintContent(
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                "Imprimí para activar tu tarjeta",
+                "Print to activate your card",
                 style = MaterialTheme.typography.titleLarge,
                 color = TextPrimary,
                 textAlign = TextAlign.Center,
@@ -307,7 +377,7 @@ private fun QrPrintContent(
             Spacer(Modifier.height(28.dp))
             PrintTicket(
                 qrContent = token.qrPayload,
-                caption = "Activá tu tarjeta",
+                caption = "Activate your card",
                 modifier =
                     Modifier
                         .fillMaxWidth()
@@ -325,38 +395,13 @@ private fun QrPrintContent(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             BrandButton(
-                text = if (printing) "Imprimiendo…" else "IMPRIMIR",
+                text = if (printing) "Printing…" else "PRINT",
                 icon = Icons.Filled.Print,
                 enabled = !printing,
-                onClick = {
-                    if (printing) return@BrandButton
-                    printing = true
-                    // Print right away on the printer's own IO scope — it starts
-                    // the instant the button is tapped and isn't tied to (or
-                    // cancelled by) the slide-up animation below.
-                    ZcsPrinter.printActivationNow(token.qrPayload)
-                    scope.launch {
-                        coroutineScope {
-                            launch {
-                                translationY.animateTo(-1300f, tween(2696, easing = LinearEasing))
-                            }
-                            launch {
-                                alpha.animateTo(
-                                    0f,
-                                    keyframes {
-                                        durationMillis = 2696
-                                        1f at 1883
-                                        0f at 2696
-                                    },
-                                )
-                            }
-                        }
-                        onDone()
-                    }
-                },
+                onClick = { startPrint() },
                 modifier = Modifier.fillMaxWidth(),
             )
-            GhostButton("Cancelar", onCancel, Modifier.fillMaxWidth(), enabled = !printing)
+            GhostButton("Cancel", onCancel, Modifier.fillMaxWidth(), enabled = !printing)
         }
     }
 }
@@ -378,6 +423,38 @@ private fun FailedContent(
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(24.dp))
-        BrandButton("Volver", onBack, Modifier.fillMaxWidth(0.7f))
+        BrandButton("Back", onBack, Modifier.fillMaxWidth(0.7f))
+    }
+}
+
+@Composable
+private fun BlankCardContent(onBack: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Filled.Warning,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(56.dp),
+        )
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "Blank card",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "This card has no LaWallet data yet. Install it first with the " +
+                "LaWallet Card Installer app — available on zapstore.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(28.dp))
+        BrandButton("Back", onBack, Modifier.fillMaxWidth(0.7f))
     }
 }

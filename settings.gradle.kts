@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LaWalletCardActivation"
+rootProject.name = "card-manager"
 include(":app")

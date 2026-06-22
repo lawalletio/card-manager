@@ -1,0 +1,23 @@
+# zapstore publishing config — https://zapstore.dev/docs/publish
+#
+# Publish with:
+#   SIGN_WITH=nsec1...  zsp publish
+# (or `zsp publish --wizard` the first time to fill in / verify these fields)
+
+repository: https://github.com/lawalletio/card-manager
+
+# Your Nostr identity (npub) — REQUIRED. Replace with the publisher's pubkey.
+# On the FIRST publish you must link the APK signing certificate to this identity
+# (NIP-C1). Our release cert SHA-256 is:
+#   96:E0:2E:34:05:78:51:3F:96:9A:A1:C0:13:CE:17:23:A3:B7:0E:32:BF:15:61:C8:2B:5A:04:07:7F:10:D3:84
+pubkey: npub1replace_with_your_pubkey
+
+# Where the signed APK comes from. Default: the local release build.
+# Alternatives: a GitHub release asset (omit this and tag a release on the repo),
+# or any direct HTTPS URL to an APK.
+release_source: ./app/build/outputs/apk/release/app-release.apk
+
+# Auto-enrich the listing (name, description, icon) from these sources.
+# Fields set in this file always take priority over fetched metadata.
+metadata_sources:
+  - github

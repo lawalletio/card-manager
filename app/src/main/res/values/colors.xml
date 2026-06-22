@@ -3,4 +3,5 @@
     <color name="background">#0A0A0A</color>
     <color name="primary">#00836D</color>
     <color name="secondary">#00C7A0</color>
+    <color name="status_bar">#00836D</color>
 </resources>

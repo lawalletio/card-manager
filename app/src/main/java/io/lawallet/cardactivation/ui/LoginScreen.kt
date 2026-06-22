@@ -49,8 +49,8 @@ fun LoginScreen() {
                 AuthStore.LoginResult.Ok -> null // state flips → app shows the flow
                 is AuthStore.LoginResult.Fail ->
                     when (r.reason) {
-                        "expired" -> "Ese token expiró — pedí uno nuevo."
-                        else -> "Ese QR no es un device token válido."
+                        "expired" -> "That token expired — ask for a new one."
+                        else -> "That QR isn't a valid device token."
                     }
             }
     }
@@ -73,13 +73,13 @@ fun LoginScreen() {
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                "Activación de tarjetas",
+                "Card activation",
                 style = MaterialTheme.typography.titleMedium,
                 color = TextPrimary,
             )
             Spacer(Modifier.height(28.dp))
             Text(
-                "Pedile a tu admin un device token (Ajustes → Device tokens → Generar) y escaneá el QR.",
+                "Ask your admin for a device token (Settings → Device tokens → Generate) and scan the QR.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
                 textAlign = TextAlign.Center,
@@ -87,7 +87,7 @@ fun LoginScreen() {
             Spacer(Modifier.height(40.dp))
 
             BrandButton(
-                text = "ESCANEAR TOKEN",
+                text = "SCAN TOKEN",
                 icon = Icons.Filled.QrCodeScanner,
                 onClick = {
                     error = null
@@ -97,7 +97,7 @@ fun LoginScreen() {
                             setBeepEnabled(false)
                             setOrientationLocked(false) // portrait is forced by the activity
                             setCaptureActivity(QrCaptureActivity::class.java)
-                            setPrompt("Escaneá el device token")
+                            setPrompt("Scan the device token")
                         },
                     )
                 },
@@ -117,14 +117,14 @@ fun LoginScreen() {
                 )
                 Spacer(Modifier.height(10.dp))
                 BrandButton(
-                    text = "Usar token",
+                    text = "Use token",
                     onClick = { submit(manual) },
                     enabled = manual.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
                 GhostButton(
-                    text = "Pegar token manualmente",
+                    text = "Paste token manually",
                     onClick = { showManual = true },
                     modifier = Modifier.fillMaxWidth(),
                 )

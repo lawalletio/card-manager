@@ -9,7 +9,6 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.app.ActivityCompat
@@ -25,9 +24,13 @@ class MainActivity : ComponentActivity() {
     private var nfcAdapter: NfcAdapter? = null
     private val cardUrls = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
+    // Emitted when a tag is tapped but carries no LaWallet card lnurl (blank card).
+    private val blankCards = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // No edge-to-edge: content sits below the (green) status bar instead of
+        // drawing behind it, so the bar stays a visible, non-overlaid margin.
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
 
         ActivityCompat.requestPermissions(
@@ -43,6 +46,7 @@ class MainActivity : ComponentActivity() {
                 if (auth.loggedIn) {
                     HomeScreen(
                         cardUrls = cardUrls,
+                        blankCards = blankCards,
                         nfcAvailable = nfcAdapter?.isEnabled == true,
                         onLogout = { AuthStore.logout() },
                     )
@@ -77,7 +81,16 @@ class MainActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
             }
-        tag?.let { CardNfc.readUrl(it)?.let(cardUrls::tryEmit) }
+        tag?.let {
+            val url = CardNfc.readUrl(it)
+            // A LaWallet card's lnurl points at /api/cards/<id>/scan. Anything else
+            // (no NDEF, or a non-LaWallet tag) is treated as a blank card.
+            if (url != null && url.contains("/api/cards/")) {
+                cardUrls.tryEmit(url)
+            } else {
+                blankCards.tryEmit(Unit)
+            }
+        }
     }
 
     override fun onRequestPermissionsResult(

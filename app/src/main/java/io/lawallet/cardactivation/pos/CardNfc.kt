@@ -20,10 +20,18 @@ object CardNfc {
                 }.also { runCatching { ndef.close() } }.getOrNull()
                 ?: return null
 
+        // Prefer the LaWallet lnurl record wherever it sits in the message;
+        // otherwise fall back to the first decodable record (so a blank /
+        // non-LaWallet tag is still surfaced and handled as such upstream).
+        var fallback: String? = null
         for (record in message.records) {
-            decode(record)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+            val decoded = decode(record)?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            if (decoded.contains("/api/cards/") || decoded.startsWith("lnurlw://", ignoreCase = true)) {
+                return decoded
+            }
+            if (fallback == null) fallback = decoded
         }
-        return null
+        return fallback
     }
 
     private fun decode(record: NdefRecord): String? {

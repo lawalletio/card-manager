@@ -83,7 +83,7 @@ object ZcsPrinter {
     /** Prints an activation slip: message + the activation-URL QR. */
     suspend fun printActivation(
         url: String,
-        message: String = "Activá tu tarjeta",
+        message: String = "Activate your card",
     ): PrintResult = printSlip(subtitle = message, qrData = url, caption = cardDomain(url))
 
     /**
@@ -93,7 +93,7 @@ object ZcsPrinter {
      */
     fun printActivationNow(
         url: String,
-        message: String = "Activá tu tarjeta",
+        message: String = "Activate your card",
     ) {
         ioScope.launch { printActivation(url, message) }
     }

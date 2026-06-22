@@ -5,10 +5,16 @@
 *.iml
 .idea/
 
-# Gradle / Android build outputs (the app lives in android/)
+# Gradle / Android build outputs
 .gradle/
 build/
 local.properties
 .cxx/
 .externalNativeBuild/
 captures/
+
+# Release signing — keep these out of version control
+keystore.properties
+*.keystore
+*.jks
+*.p12

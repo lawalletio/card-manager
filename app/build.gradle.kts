@@ -1,8 +1,21 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Release signing credentials live in keystore.properties (gitignored). When
+// absent (CI / fresh checkout) the release build falls back to the debug key so
+// `assembleRelease` still produces an installable APK.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps =
+    Properties().apply {
+        if (keystorePropsFile.exists()) FileInputStream(keystorePropsFile).use { load(it) }
+    }
+val hasReleaseKeystore = keystorePropsFile.exists()
 
 android {
     namespace = "io.lawallet.cardactivation"
@@ -12,18 +25,39 @@ android {
         applicationId = "io.lawallet.cardactivation"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                storeFile = rootProject.file(keystoreProps["storeFile"] as String)
+                storePassword = keystoreProps["storePassword"] as String
+                keyAlias = keystoreProps["keyAlias"] as String
+                keyPassword = keystoreProps["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true // R8: shrink + optimize + obfuscate
+            isShrinkResources = true // drop unused resources
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig =
+                if (hasReleaseKeystore) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
+    }
+
+    // Don't embed the Google-signed dependency-metadata blob — keeps the APK
+    // clean/reproducible for F-Droid-style stores like zapstore.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     compileOptions {

@@ -75,7 +75,7 @@ fun PrintTicket(
             Image(
                 bitmap = qr,
                 contentDescription = "QR",
-                modifier = Modifier.fillMaxWidth(0.72f).aspectRatio(1f),
+                modifier = Modifier.fillMaxWidth(0.91f).aspectRatio(1f),
             )
             Spacer(Modifier.height(18.dp))
             Text(

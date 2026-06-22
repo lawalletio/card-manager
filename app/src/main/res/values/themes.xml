@@ -2,7 +2,8 @@
 <resources>
     <style name="Theme.App" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
-        <item name="android:statusBarColor">@color/background</item>
+        <!-- Green status bar with light (white) icons, content laid out below it. -->
+        <item name="android:statusBarColor">@color/status_bar</item>
         <item name="android:navigationBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
