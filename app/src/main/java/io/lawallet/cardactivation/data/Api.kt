@@ -7,9 +7,16 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+
+/** SUN proof from a tapped card's NDEF URL query (`p` = encrypted PICC data, `c` = CMAC). */
+data class Sun(
+    val p: String,
+    val c: String,
+)
 
 /** Card detail for display (subset of the backend `Card`). */
 data class CardDetail(
@@ -19,9 +26,27 @@ data class CardDetail(
     val status: String,
     val lightningAddress: String?,
     val kind: String?,
+    val owned: Boolean,
+    val disabled: Boolean,
+    /** The fresh tap's SUN proof — null for manual entry (recovery then needs a real tap). */
+    val sun: Sun?,
 )
 
-/** Minted ONE_TIME activation token. */
+/** Owner of a card, from `GET /api/cards/:id/owner`. Addresses are full `user@domain`. */
+data class OwnerSummary(
+    val owned: Boolean,
+    val pubkey: String?,
+    val primaryAddress: String?,
+    val lightningAddresses: List<String>,
+    val cards: Int,
+    val remoteWallets: Int,
+    val cardRecoveryEnabled: Boolean,
+    val cardDisabled: Boolean,
+    /** Null when the owner's wallet is unreachable. */
+    val balanceSats: Long?,
+)
+
+/** Minted ONE_TIME activation (or recovery) token. */
 data class ActivationToken(
     val qrPayload: String,
     val expiresAt: String?,
@@ -33,6 +58,8 @@ class ApiException(message: String, val code: Int = 0) : Exception(message)
  * Authenticated LaWallet API (`Authorization: Bearer <jwt>` over `AuthStore.baseUrl`),
  * mirroring card-installer's flow: GET `/api/cards/:id` for the card data, then
  * POST `/api/cards/:id/activation-tokens` `{qrKind:"ONE_TIME"}` to mint the QR.
+ * Owned cards also load `GET …/owner`, and RECOVER mints POST `…/recovery-tokens`
+ * with the tap's SUN `{p, c}`.
  */
 object Api {
     private val client = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
@@ -45,21 +72,64 @@ object Api {
         return input.trim().removePrefix("lnurlw://").removePrefix("https://").trim('/')
     }
 
-    suspend fun getCard(cardUrlOrId: String): CardDetail =
+    /** The SUN `p`/`c` hex params of a tapped card URL, or null if either is missing. */
+    fun parseSun(cardUrl: String): Sun? {
+        fun param(name: String) = Regex("[?&]$name=([0-9A-Fa-f]+)").find(cardUrl)?.groupValues?.get(1)
+        val p = param("p") ?: return null
+        val c = param("c") ?: return null
+        return Sun(p, c)
+    }
+
+    suspend fun getCard(
+        cardUrlOrId: String,
+        sun: Sun? = null,
+    ): CardDetail =
         withContext(Dispatchers.IO) {
             val id = resolveCardId(cardUrlOrId)
             val o = request(Request.Builder().url(AuthStore.baseUrl + "/api/cards/" + enc(id)).get())
             val design = o.optJSONObject("design")
-            val username = o.optString("username").ifBlank { null }
-            val pubkey = o.optString("pubkey").ifBlank { null }
+            val username = o.optStr("username")
+            val pubkey = o.optStr("pubkey")
             val assigned = username != null || pubkey != null
+            val disabled = o.optBoolean("disabled")
             CardDetail(
                 id = o.optString("id").ifBlank { id },
                 imageUrl = design?.optString("imageUrl")?.ifBlank { null },
                 designName = design?.optString("description")?.ifBlank { null },
-                status = if (assigned) "Activated" else "Not activated",
+                status =
+                    when {
+                        !assigned -> "Not activated"
+                        disabled -> "Paused"
+                        else -> "Activated"
+                    },
                 lightningAddress = username?.let { "$it@${AuthStore.host()}" },
                 kind = o.optString("kind").ifBlank { null },
+                owned = assigned,
+                disabled = disabled,
+                sun = sun,
+            )
+        }
+
+    /** The card owner's summary, or null on an older backend without the endpoint (404). */
+    suspend fun getOwner(cardId: String): OwnerSummary? =
+        withContext(Dispatchers.IO) {
+            val o =
+                try {
+                    request(Request.Builder().url(AuthStore.baseUrl + "/api/cards/" + enc(cardId) + "/owner").get())
+                } catch (e: ApiException) {
+                    if (e.code == 404) return@withContext null
+                    throw e
+                }
+            OwnerSummary(
+                owned = o.optBoolean("owned"),
+                pubkey = o.optStr("pubkey"),
+                primaryAddress = o.optStr("primaryAddress"),
+                lightningAddresses = o.optJSONArray("lightningAddresses").strings(),
+                cards = o.optInt("cards"),
+                remoteWallets = o.optInt("remoteWallets"),
+                cardRecoveryEnabled = o.optBoolean("cardRecoveryEnabled"),
+                cardDisabled = o.optBoolean("cardDisabled"),
+                balanceSats = if (o.isNull("balanceSats")) null else o.optLong("balanceSats"),
             )
         }
 
@@ -77,9 +147,42 @@ object Api {
             ActivationToken(qrPayload = qr, expiresAt = o.optString("expiresAt").ifBlank { null })
         }
 
+    /**
+     * Mints a ONE_TIME recovery QR (`…/wallet/activate/<id>?tag=recover`). Needs the
+     * fresh tap's SUN; errors carry the server's reason (recovery off, tap reused…).
+     */
+    suspend fun mintRecovery(
+        cardId: String,
+        sun: Sun,
+    ): ActivationToken =
+        withContext(Dispatchers.IO) {
+            val body: RequestBody =
+                JSONObject().put("p", sun.p).put("c", sun.c).toString().toRequestBody(jsonMedia)
+            val o =
+                request(
+                    Request.Builder()
+                        .url(AuthStore.baseUrl + "/api/cards/" + enc(cardId) + "/recovery-tokens")
+                        .post(body),
+                    preferServerMessage = true,
+                )
+            val qr = o.optString("qrPayload").ifBlank { null }
+                ?: throw ApiException("Recovery response missing qrPayload.")
+            ActivationToken(qrPayload = qr, expiresAt = o.optString("expiresAt").ifBlank { null })
+        }
+
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
-    private fun request(builder: Request.Builder): JSONObject {
+    /** Like `optString`, but JSON `null` / missing / blank → null (not the string "null"). */
+    private fun JSONObject.optStr(key: String): String? = if (isNull(key)) null else optString(key).ifBlank { null }
+
+    private fun JSONArray?.strings(): List<String> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).ifBlank { null } }
+
+    /** [preferServerMessage]: show the server's `message` for any error code, not our canned 404/409 text. */
+    private fun request(
+        builder: Request.Builder,
+        preferServerMessage: Boolean = false,
+    ): JSONObject {
         val token = AuthStore.jwt ?: throw ApiException("Not authenticated.")
         val req =
             builder
@@ -94,12 +197,17 @@ object Api {
                 throw ApiException("Session expired — scan a new token.", 401)
             }
             if (!res.isSuccessful) {
+                // `{ success:false, error:{ message, code } }`; older routes send a top-level `message`.
+                val serverMessage =
+                    json?.optJSONObject("error")?.optStr("message")
+                        ?: json?.optStr("message")
                 val msg =
-                    when (res.code) {
-                        404 -> "Card not registered."
-                        409 -> "Another QR was just issued — try again."
-                        else -> json?.optString("message")?.ifBlank { null } ?: "Error (HTTP ${res.code})."
-                    }
+                    serverMessage?.takeIf { preferServerMessage }
+                        ?: when (res.code) {
+                            404 -> "Card not registered."
+                            409 -> "Another QR was just issued — try again."
+                            else -> serverMessage ?: "Error (HTTP ${res.code})."
+                        }
                 throw ApiException(msg, res.code)
             }
             return json ?: throw ApiException("Unexpected server response.")

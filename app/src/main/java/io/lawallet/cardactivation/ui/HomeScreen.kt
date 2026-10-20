@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Settings
@@ -46,6 +48,7 @@ import io.lawallet.cardactivation.data.ActivationToken
 import io.lawallet.cardactivation.data.Api
 import io.lawallet.cardactivation.data.AuthStore
 import io.lawallet.cardactivation.data.CardDetail
+import io.lawallet.cardactivation.data.OwnerSummary
 import io.lawallet.cardactivation.data.Settings
 import io.lawallet.cardactivation.pos.ZcsPrinter
 import io.lawallet.cardactivation.ui.components.FloatingCard
@@ -61,20 +64,46 @@ import io.lawallet.cardactivation.ui.theme.TextSecondary
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 private const val FALLBACK_IMAGE =
     "https://veintiuno.lat/images/card-images/card2-40.png"
+
+/** What a minted QR does — drives the screen title, ticket caption and printed subtitle. */
+private enum class QrPurpose(val title: String, val caption: String) {
+    Activate("Print to activate your card", "Activate your card"),
+    Recover("Print to recover your account", "Recover your account"),
+}
+
+/** Owner info for an owned card's detail screen. */
+private sealed interface Owner {
+    data class Known(val summary: OwnerSummary) : Owner
+
+    /** Older backend without `/owner` (404): no balance, no RECOVER. */
+    data object Unsupported : Owner
+
+    /** The owner fetch failed: "Balance unavailable", RECOVER disabled. */
+    data object Unavailable : Owner
+}
 
 private sealed interface Flow {
     data object Scanning : Flow
 
     data object LoadingCard : Flow
 
-    data class Detail(val card: CardDetail) : Flow
+    /** [owner] is null for unowned cards. */
+    data class Detail(val card: CardDetail, val owner: Owner? = null) : Flow
 
     data object Activating : Flow
 
-    data class Qr(val card: CardDetail, val token: ActivationToken, val autoStart: Boolean = false) : Flow
+    data object Recovering : Flow
+
+    data class Qr(
+        val card: CardDetail,
+        val token: ActivationToken,
+        val purpose: QrPurpose,
+        val autoStart: Boolean = false,
+    ) : Flow
 
     data class Failed(val message: String) : Flow
 
@@ -93,18 +122,25 @@ fun HomeScreen(
     val flowRef = rememberUpdatedState(flow)
     var showSettings by remember { mutableStateOf(false) }
 
-    // A tapped card (real NFC) or a manually-entered url/id → fetch + show.
-    fun handleCard(input: String) {
+    // A tapped card (real NFC) or a manually-entered url/id → fetch + show. Only a
+    // real tap carries the SUN proof that RECOVER needs.
+    fun handleCard(
+        input: String,
+        manual: Boolean = false,
+    ) {
         if (flowRef.value !is Flow.Scanning) return
         flow = Flow.LoadingCard
         scope.launch {
             flow =
                 try {
-                    val card = Api.getCard(input)
-                    if (Settings.autoPrint.value) {
+                    val card = Api.getCard(input, sun = if (manual) null else Api.parseSun(input))
+                    if (card.owned) {
+                        // Owned cards always stop on detail (owner + RECOVER), even with auto-print.
+                        Flow.Detail(card, loadOwner(card.id))
+                    } else if (Settings.autoPrint.value) {
                         // Auto-print: skip the detail screen, mint + print right away.
                         flow = Flow.Activating
-                        Flow.Qr(card, Api.mintActivation(card.id), autoStart = true)
+                        Flow.Qr(card, Api.mintActivation(card.id), QrPurpose.Activate, autoStart = true)
                     } else {
                         Flow.Detail(card)
                     }
@@ -119,9 +155,22 @@ fun HomeScreen(
         scope.launch {
             flow =
                 try {
-                    Flow.Qr(card, Api.mintActivation(card.id))
+                    Flow.Qr(card, Api.mintActivation(card.id), QrPurpose.Activate)
                 } catch (e: Exception) {
                     Flow.Failed(e.message ?: "Couldn't activate the card.")
+                }
+        }
+    }
+
+    fun recover(card: CardDetail) {
+        val sun = card.sun ?: return
+        flow = Flow.Recovering
+        scope.launch {
+            flow =
+                try {
+                    Flow.Qr(card, Api.mintRecovery(card.id, sun), QrPurpose.Recover)
+                } catch (e: Exception) {
+                    Flow.Failed(e.message ?: "Couldn't start the recovery.")
                 }
         }
     }
@@ -145,7 +194,7 @@ fun HomeScreen(
             Flow.Scanning ->
                 ScanningContent(
                     nfcAvailable = nfcAvailable,
-                    onManual = { handleCard(it) },
+                    onManual = { handleCard(it, manual = true) },
                     onOpenSettings = { showSettings = true },
                 )
 
@@ -154,15 +203,20 @@ fun HomeScreen(
             is Flow.Detail ->
                 CardDetailContent(
                     card = f.card,
+                    owner = f.owner,
                     onActivate = { activate(f.card) },
+                    onRecover = { recover(f.card) },
                     onCancel = { flow = Flow.Scanning },
                 )
 
             Flow.Activating -> Loading("Generating activation QR…")
 
+            Flow.Recovering -> Loading("Generating recovery QR…")
+
             is Flow.Qr ->
                 QrPrintContent(
                     token = f.token,
+                    purpose = f.purpose,
                     autoStart = f.autoStart,
                     onDone = { flow = Flow.Scanning },
                     onCancel = { flow = Flow.Scanning },
@@ -267,6 +321,16 @@ private fun ScanningContent(
     }
 }
 
+/** The owner summary, [Owner.Unsupported] on an older backend, or [Owner.Unavailable] on failure. */
+private suspend fun loadOwner(cardId: String): Owner =
+    try {
+        Api.getOwner(cardId)?.let { Owner.Known(it) } ?: Owner.Unsupported
+    } catch (e: Exception) {
+        Owner.Unavailable
+    }
+
+private fun formatSats(sats: Long): String = String.format(Locale.US, "%,d %s", sats, if (sats == 1L) "sat" else "sats")
+
 @Composable
 private fun Loading(text: String) {
     Column(
@@ -283,39 +347,118 @@ private fun Loading(text: String) {
 @Composable
 private fun CardDetailContent(
     card: CardDetail,
+    owner: Owner?,
     onActivate: () -> Unit,
+    onRecover: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    // RECOVER shows for owned cards on a backend that has `/owner`; when it can't run,
+    // a short reason replaces the action.
+    val canOfferRecover = owner != null && owner !is Owner.Unsupported
+    val recoverBlocked: String? =
+        when {
+            owner is Owner.Known && !owner.summary.cardRecoveryEnabled -> "The owner turned off card recovery"
+            card.disabled || (owner is Owner.Known && owner.summary.cardDisabled) -> "Card is paused by its owner"
+            card.sun == null -> "Tap the card to recover"
+            owner !is Owner.Known -> "Owner info unavailable"
+            else -> null
+        }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(if (owner != null) 8.dp else 24.dp))
         FloatingCard(imageUrl = card.imageUrl ?: FALLBACK_IMAGE, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(if (owner != null) 32.dp else 48.dp))
 
-        Text("Status", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-        Spacer(Modifier.height(2.dp))
-        Text(card.status, style = MaterialTheme.typography.titleLarge, color = TealBright)
-
-        card.lightningAddress?.let { address ->
-            Spacer(Modifier.height(18.dp))
-            Text("Lightning address", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        // Scrolls only if the owner block outgrows the space above the buttons.
+        Column(
+            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Status", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
             Spacer(Modifier.height(2.dp))
-            Text("⚡ $address", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+            Text(card.status, style = MaterialTheme.typography.titleLarge, color = TealBright)
+
+            if (owner is Owner.Known) {
+                OwnerBlock(owner.summary)
+            } else {
+                card.lightningAddress?.let { address ->
+                    Spacer(Modifier.height(18.dp))
+                    Text("Lightning address", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Spacer(Modifier.height(2.dp))
+                    Text("⚡ $address", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                }
+                if (owner is Owner.Unavailable) {
+                    Spacer(Modifier.height(18.dp))
+                    Text("Balance unavailable", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                }
+            }
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(16.dp))
 
-        BrandButton("ACTIVATE", onActivate, Modifier.fillMaxWidth().padding(horizontal = 8.dp))
-        Spacer(Modifier.height(12.dp))
-        GhostButton("Cancel", onCancel, Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+        val buttonModifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+        if (canOfferRecover) {
+            recoverBlocked?.let { reason ->
+                Text(
+                    reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            BrandButton("RECOVER", onRecover, buttonModifier, enabled = recoverBlocked == null)
+            Spacer(Modifier.height(12.dp))
+            Row(buttonModifier, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                GhostButton("ACTIVATE", onActivate, Modifier.weight(1f))
+                GhostButton("Cancel", onCancel, Modifier.weight(1f))
+            }
+        } else {
+            BrandButton("ACTIVATE", onActivate, buttonModifier)
+            Spacer(Modifier.height(12.dp))
+            GhostButton("Cancel", onCancel, buttonModifier)
+        }
+    }
+}
+
+/** The owner's lightning addresses (primary first, from the server) and wallet balance. */
+@Composable
+private fun OwnerBlock(owner: OwnerSummary) {
+    val primary = owner.primaryAddress ?: owner.lightningAddresses.firstOrNull()
+    val others = owner.lightningAddresses.filter { it != primary }
+
+    Spacer(Modifier.height(18.dp))
+    Text("Owner", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+    Spacer(Modifier.height(2.dp))
+    Text(
+        primary?.let { "⚡ $it" } ?: "No lightning address",
+        style = MaterialTheme.typography.titleMedium,
+        color = if (primary != null) TextPrimary else TextSecondary,
+        textAlign = TextAlign.Center,
+    )
+    others.forEach { address ->
+        Text(address, style = MaterialTheme.typography.bodySmall, color = TextSecondary, textAlign = TextAlign.Center)
+    }
+
+    Spacer(Modifier.height(18.dp))
+    Text("Balance", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+    Spacer(Modifier.height(2.dp))
+    val balance = owner.balanceSats
+    if (balance != null) {
+        Text(formatSats(balance), style = MaterialTheme.typography.titleLarge, color = TealBright)
+    } else {
+        Text("Balance unavailable", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
     }
 }
 
 @Composable
 private fun QrPrintContent(
     token: ActivationToken,
+    purpose: QrPurpose,
     autoStart: Boolean,
     onDone: () -> Unit,
     onCancel: () -> Unit,
@@ -333,7 +476,7 @@ private fun QrPrintContent(
     fun startPrint() {
         if (printing) return
         printing = true
-        ZcsPrinter.printActivationNow(token.qrPayload)
+        ZcsPrinter.printActivationNow(token.qrPayload, purpose.caption)
         scope.launch {
             coroutineScope {
                 launch {
@@ -368,7 +511,7 @@ private fun QrPrintContent(
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                "Print to activate your card",
+                purpose.title,
                 style = MaterialTheme.typography.titleLarge,
                 color = TextPrimary,
                 textAlign = TextAlign.Center,
@@ -377,7 +520,7 @@ private fun QrPrintContent(
             Spacer(Modifier.height(28.dp))
             PrintTicket(
                 qrContent = token.qrPayload,
-                caption = "Activate your card",
+                caption = purpose.caption,
                 modifier =
                     Modifier
                         .fillMaxWidth()

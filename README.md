@@ -3,8 +3,9 @@
 Native **Kotlin + Jetpack Compose** Android app to **activate LaWallet NFC cards**
 on the **ZCS Z92** POS terminal. Sign in with a device-token QR, tap a card, and it
 mints a one-time **activation QR** that prints on the built-in thermal printer for
-the end user to scan and claim the card. Reuses the **ZCS SmartPos** printer driver
-and **NFC** stack from `../android-pos-wrapper`.
+the end user to scan and claim the card. For an owner who lost their key, tapping
+their card mints a one-time **recovery QR** instead. Reuses the **ZCS SmartPos**
+printer driver and **NFC** stack from `../android-pos-wrapper`.
 
 ## Features
 
@@ -12,10 +13,16 @@ and **NFC** stack from `../android-pos-wrapper`.
   picks the instance, every call is `Bearer`-authenticated, a 401 logs out.
 - **Live activation** — tap → `GET /api/cards/:id` → real status / lightning
   address / design, then mint `POST …/activation-tokens` → print the QR.
+- **Account recovery** — an owned card shows its owner (primary + other lightning
+  addresses, wallet balance) and a **RECOVER** button. It mints a ONE_TIME
+  `…?tag=recover` QR from the tap's SUN proof. Whoever scans it with a new key
+  takes over the account. RECOVER is disabled, with the reason shown, when the
+  owner turned recovery off, the card is paused, or there was no fresh tap.
 - **Real NFC + real thermal print** on the ZCS hardware; the printed QR is the
   exact same ZXing code shown on screen.
 - **Settings** — instance, pubkey, scopes, **token expiry**, an **auto-print on
-  tap** toggle (mint + print automatically), log out, and the app version.
+  tap** toggle (mint + print automatically, unowned cards only), log out, and the
+  app version.
 - **Blank-card guidance** — a tag with no LaWallet lnurl prompts to install it
   first with the *LaWallet Card Installer* app (on zapstore).
 - **Optimized release** — R8 + resource shrinking + baseline profiles (~3.7 MB),
@@ -45,12 +52,33 @@ First launch asks for `READ_PHONE_STATE` (the ZCS SDK reads device identity duri
    ("Enter manually" pastes a card URL/id for testing.) A tapped tag with no
    LaWallet lnurl shows a *blank card* prompt instead.
 2. **Loading** — a Lottie animation while `GET /api/cards/:id` runs (the id is
-   parsed from the tapped `…/api/cards/<id>/scan` URL).
+   parsed from the tapped `…/api/cards/<id>/scan?p=…&c=…` URL; `p`/`c` are kept as
+   the tap's SUN proof). For an owned card it also loads
+   `GET /api/cards/:id/owner`.
 3. **Card detail** — a 3D **floating card** (real `design.imageUrl` via Coil) with
    the card **status** and **lightning address**; **ACTIVATE** / **Cancel**.
+   With *auto-print* on, an unowned card skips this screen and prints right away.
+   An owned card always stops here and shows an **Owner** block: the owner's
+   primary lightning address (from the server), any other addresses, and the
+   balance ("12,345 sats", or *Balance unavailable*). Its actions are **RECOVER**,
+   **ACTIVATE** and **Cancel**.
 4. **QR + print** — ACTIVATE mints `POST /api/cards/:id/activation-tokens`
    `{qrKind:"ONE_TIME"}`; the returned **`qrPayload`** shows as a thermal-ticket
    preview that slides up (~2 s) *while it really prints*, then returns to scanning.
+   RECOVER mints `POST /api/cards/:id/recovery-tokens` `{p, c}` instead and prints
+   a *Recover your account* slip. A SUN proof works once, so a failed or repeated
+   recovery needs a new tap. Manual entry has no SUN proof, so it can't recover.
+
+### Endpoints
+
+All calls send `Authorization: Bearer <device token>` and JSON.
+
+| Call | Purpose |
+| --- | --- |
+| `GET /api/cards/:id` | Card design, owner `username`/`pubkey`, `disabled` (paused). |
+| `GET /api/cards/:id/owner` | Owner summary: `primaryAddress`, `lightningAddresses`, `cardRecoveryEnabled`, `balanceSats` (null if the wallet is unreachable). A 404 means an older backend, so the balance and RECOVER are hidden. |
+| `POST /api/cards/:id/activation-tokens` | `{qrKind:"ONE_TIME"}` → activation `qrPayload`. |
+| `POST /api/cards/:id/recovery-tokens` | `{p, c}` from the tap → `…/wallet/activate/<id>?tag=recover` `qrPayload`. Errors show the server's `error.message`: 400 = SUN invalid; 403 = owner turned recovery off; 409 = no owner, card blocked or paused, or tap already used. |
 
 Testing the full flow needs a valid device-token JWT and a registered card on a
 reachable instance.
@@ -79,8 +107,10 @@ helpers live in `ui/theme/{Theme,Brand}.kt`.
 - `MainActivity.kt` — Compose host + NFC foreground dispatch; emits card URLs / a
   blank-card signal to `SharedFlow`s.
 - `data/{Jwt,AuthStore,Api,Settings}.kt` — JWT decode + token/prefs stores + the
-  authenticated OkHttp client (`Bearer`, 401 → logout, `apiUrl`-derived base URL).
+  authenticated OkHttp client (`Bearer`, 401 → logout, `apiUrl`-derived base URL),
+  SUN (`p`/`c`) parsing, owner summary and activation/recovery minting.
 - `util/Domain.kt` — host extraction for the slip footer.
-- `ui/` — `HomeScreen` (scanning → loading → detail → QR/print state machine),
+- `ui/` — `HomeScreen` (scanning → loading → detail → activate/recover → QR/print
+  state machine),
   `LoginScreen` (+ `QrCaptureActivity` portrait scanner), `SettingsScreen`,
   `QrBitmap`, and `components/` (`FloatingCard`, `PrintTicket`, `NfcPulse`).
