@@ -42,6 +42,15 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 adb shell am start -n io.lawallet.cardactivation/.MainActivity
 ```
 
+**No NFC (emulator)?** Debug builds accept a simulated tap and plain-http
+local servers. Grab a signed tap URL from the admin *Card emulator* (Simple
+tap shows the exact `lnurlw://` the card emits), forward the port, and send it:
+
+```bash
+adb reverse tcp:3305 tcp:3305
+adb shell "am start -n io.lawallet.cardactivation/.MainActivity --es sim_tap '<lnurlw://…/scan?p=…&c=…>'"
+```
+
 First launch asks for `READ_PHONE_STATE` (the ZCS SDK reads device identity during
 `sdkInit`). For a **signed release** build + zapstore publishing, see
 [`PUBLISHING.md`](PUBLISHING.md).
@@ -49,11 +58,14 @@ First launch asks for `READ_PHONE_STATE` (the ZCS SDK reads device identity duri
 ## How it works
 
 1. **Scanning** — always armed for NFC; an animated radar pulse waits for a tap.
-   ("Enter manually" pastes a card URL/id for testing.) A tapped tag with no
-   LaWallet lnurl shows a *blank card* prompt instead.
-2. **Loading** — a Lottie animation while `GET /api/cards/:id` runs (the id is
-   parsed from the tapped `…/api/cards/<id>/scan?p=…&c=…` URL; `p`/`c` are kept as
-   the tap's SUN proof). For an owned card it also loads
+   ("Enter manually" pastes a full tap URL for testing — a card id alone is
+   refused.) A tapped tag with no LaWallet lnurl shows a *blank card* prompt instead.
+2. **Loading** — a Lottie animation while the tap is checked and the card loads.
+   The id and the SUN proof (`p`/`c`) come from the tapped
+   `…/api/cards/<id>/scan?p=…&c=…` URL. `POST /api/cards/:id/verify-tap` checks
+   the proof the way a payment does (genuine card, unedited, counter not already
+   spent) without spending it; an edited or replayed URL stops here with the
+   server's reason. Then `GET /api/cards/:id`, and for an owned card
    `GET /api/cards/:id/owner`.
 3. **Card detail** — a 3D **floating card** (real `design.imageUrl` via Coil) with
    the card **status** and **lightning address**; **ACTIVATE** / **Cancel**.
@@ -67,7 +79,7 @@ First launch asks for `READ_PHONE_STATE` (the ZCS SDK reads device identity duri
    preview that slides up (~2 s) *while it really prints*, then returns to scanning.
    RECOVER mints `POST /api/cards/:id/recovery-tokens` `{p, c}` instead and prints
    a *Recover your account* slip. A SUN proof works once, so a failed or repeated
-   recovery needs a new tap. Manual entry has no SUN proof, so it can't recover.
+   recovery needs a new tap.
 
 ### Endpoints
 
@@ -78,6 +90,7 @@ All calls send `Authorization: Bearer <device token>` and JSON.
 | `GET /api/cards/:id` | Card design, owner `username`/`pubkey`, `disabled` (paused). |
 | `GET /api/cards/:id/owner` | Owner summary: `primaryAddress`, `lightningAddresses`, `cardRecoveryEnabled`, `balanceSats` (null if the wallet is unreachable). A 404 means an older backend, so the balance and RECOVER are hidden. |
 | `POST /api/cards/:id/activation-tokens` | `{qrKind:"ONE_TIME"}` → activation `qrPayload`. |
+| `POST /api/cards/:id/verify-tap` | `{p, c}` from the tap → 200 if genuine and unspent (doesn't spend it). 400 = forged or edited, 409 = already used. Needs a backend with card recovery (lawallet-nwc PR #373). |
 | `POST /api/cards/:id/recovery-tokens` | `{p, c}` from the tap → `…/wallet/activate/<id>?tag=recover` `qrPayload`. Errors show the server's `error.message`: 400 = SUN invalid; 403 = owner turned recovery off; 409 = no owner, card blocked or paused, or tap already used. |
 
 Testing the full flow needs a valid device-token JWT and a registered card on a

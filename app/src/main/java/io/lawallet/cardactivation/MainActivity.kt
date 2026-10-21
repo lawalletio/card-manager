@@ -3,6 +3,7 @@ package io.lawallet.cardactivation
 import android.Manifest
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.os.Build
@@ -74,6 +75,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Debug builds only: `adb shell am start -n io.lawallet.cardactivation/.MainActivity
+        // --es sim_tap '<card scan url>'` stands in for an NFC tap (emulator has no NFC).
+        val simTap = intent.getStringExtra("sim_tap")
+        if (simTap != null && applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            cardUrls.tryEmit(simTap)
+            return
+        }
         val tag: Tag? =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)

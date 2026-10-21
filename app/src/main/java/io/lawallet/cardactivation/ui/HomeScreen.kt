@@ -122,18 +122,22 @@ fun HomeScreen(
     val flowRef = rememberUpdatedState(flow)
     var showSettings by remember { mutableStateOf(false) }
 
-    // A tapped card (real NFC) or a manually-entered url/id → fetch + show. Only a
-    // real tap carries the SUN proof that RECOVER needs.
-    fun handleCard(
-        input: String,
-        manual: Boolean = false,
-    ) {
+    // A tapped card (real NFC) or a pasted tap URL → verify the tap, then fetch + show.
+    // Like a payment, only a genuine, unspent SUN proof gets a card on screen.
+    fun handleCard(input: String) {
         if (flowRef.value !is Flow.Scanning) return
+        val id = Api.resolveCardId(input)
+        val sun = Api.parseSun(input)
+        if (id == null || sun == null) {
+            flow = Flow.Failed("Not a card tap. Tap the card, or paste its full lnurlw:// URL.")
+            return
+        }
         flow = Flow.LoadingCard
         scope.launch {
             flow =
                 try {
-                    val card = Api.getCard(input, sun = if (manual) null else Api.parseSun(input))
+                    Api.verifyTap(id, sun)
+                    val card = Api.getCard(id, sun)
                     if (card.owned) {
                         // Owned cards always stop on detail (owner + RECOVER), even with auto-print.
                         Flow.Detail(card, loadOwner(card.id))
@@ -163,7 +167,7 @@ fun HomeScreen(
     }
 
     fun recover(card: CardDetail) {
-        val sun = card.sun ?: return
+        val sun = card.sun
         flow = Flow.Recovering
         scope.launch {
             flow =
@@ -194,7 +198,7 @@ fun HomeScreen(
             Flow.Scanning ->
                 ScanningContent(
                     nfcAvailable = nfcAvailable,
-                    onManual = { handleCard(it, manual = true) },
+                    onManual = { handleCard(it) },
                     onOpenSettings = { showSettings = true },
                 )
 
@@ -287,7 +291,7 @@ private fun ScanningContent(
                 OutlinedTextField(
                     value = manual,
                     onValueChange = { manual = it },
-                    label = { Text("Card URL or id") },
+                    label = { Text("Card tap URL (lnurlw://…?p=…&c=…)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -359,7 +363,6 @@ private fun CardDetailContent(
         when {
             owner is Owner.Known && !owner.summary.cardRecoveryEnabled -> "The owner turned off card recovery"
             card.disabled || (owner is Owner.Known && owner.summary.cardDisabled) -> "Card is paused by its owner"
-            card.sun == null -> "Tap the card to recover"
             owner !is Owner.Known -> "Owner info unavailable"
             else -> null
         }

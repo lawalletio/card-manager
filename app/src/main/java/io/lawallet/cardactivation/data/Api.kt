@@ -28,8 +28,8 @@ data class CardDetail(
     val kind: String?,
     val owned: Boolean,
     val disabled: Boolean,
-    /** The fresh tap's SUN proof — null for manual entry (recovery then needs a real tap). */
-    val sun: Sun?,
+    /** The tap's SUN proof, already verified by the server. RECOVER spends it. */
+    val sun: Sun,
 )
 
 /** Owner of a card, from `GET /api/cards/:id/owner`. Addresses are full `user@domain`. */
@@ -65,12 +65,8 @@ object Api {
     private val client = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
     private val jsonMedia = "application/json".toMediaType()
 
-    /** Extracts the server card id from a tapped lnurlw/https scan URL, or
-     * accepts a bare id when entered manually. */
-    fun resolveCardId(input: String): String {
-        Regex("/api/cards/([^/?]+)").find(input)?.let { return it.groupValues[1] }
-        return input.trim().removePrefix("lnurlw://").removePrefix("https://").trim('/')
-    }
+    /** The server card id from a tapped lnurlw/https scan URL, or null if it isn't one. */
+    fun resolveCardId(input: String): String? = Regex("/api/cards/([^/?]+)").find(input)?.groupValues?.get(1)
 
     /** The SUN `p`/`c` hex params of a tapped card URL, or null if either is missing. */
     fun parseSun(cardUrl: String): Sun? {
@@ -80,12 +76,31 @@ object Api {
         return Sun(p, c)
     }
 
+    /**
+     * Checks a tap is genuine and unspent (`POST …/verify-tap`), the way a payment
+     * would: an edited or replayed URL fails here, so a card id alone never gets a
+     * card on screen. Doesn't spend the tap. Throws with the server's reason.
+     */
+    suspend fun verifyTap(
+        cardId: String,
+        sun: Sun,
+    ): Unit =
+        withContext(Dispatchers.IO) {
+            val body: RequestBody =
+                JSONObject().put("p", sun.p).put("c", sun.c).toString().toRequestBody(jsonMedia)
+            request(
+                Request.Builder()
+                    .url(AuthStore.baseUrl + "/api/cards/" + enc(cardId) + "/verify-tap")
+                    .post(body),
+                preferServerMessage = true,
+            )
+        }
+
     suspend fun getCard(
-        cardUrlOrId: String,
-        sun: Sun? = null,
+        id: String,
+        sun: Sun,
     ): CardDetail =
         withContext(Dispatchers.IO) {
-            val id = resolveCardId(cardUrlOrId)
             val o = request(Request.Builder().url(AuthStore.baseUrl + "/api/cards/" + enc(id)).get())
             val design = o.optJSONObject("design")
             val username = o.optStr("username")

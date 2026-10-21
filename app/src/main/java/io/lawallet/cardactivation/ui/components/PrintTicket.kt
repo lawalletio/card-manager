@@ -1,7 +1,13 @@
 package io.lawallet.cardactivation.ui.components
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -22,6 +28,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -33,6 +40,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.lawallet.cardactivation.util.cardDomain
 import io.lawallet.cardactivation.ui.QrBitmap
+
+/** Copies the QR's URL. Android 13+ shows its own "copied" confirmation. */
+private fun copyToClipboard(
+    context: Context,
+    text: String,
+) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    clipboard.setPrimaryClip(ClipData.newPlainText("LaWallet QR", text))
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        Toast.makeText(context, "URL copied", Toast.LENGTH_SHORT).show()
+    }
+}
 
 /**
  * On-screen preview of the thermal slip that gets printed: a white "paper"
@@ -49,6 +68,7 @@ fun PrintTicket(
     val domain = remember(qrContent) { cardDomain(qrContent) }
     val ink = Color(0xFF0A0A0A)
     val paper = remember { TornPaperShape() }
+    val context = LocalContext.current
 
     Surface(
         color = Color(0xFFFBFBF8),
@@ -74,8 +94,12 @@ fun PrintTicket(
             Spacer(Modifier.height(18.dp))
             Image(
                 bitmap = qr,
-                contentDescription = "QR",
-                modifier = Modifier.fillMaxWidth(0.91f).aspectRatio(1f),
+                contentDescription = "QR — tap to copy the URL",
+                modifier =
+                    Modifier
+                        .fillMaxWidth(0.91f)
+                        .aspectRatio(1f)
+                        .clickable { copyToClipboard(context, qrContent) },
             )
             Spacer(Modifier.height(18.dp))
             Text(
