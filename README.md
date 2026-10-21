@@ -42,6 +42,15 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 adb shell am start -n io.lawallet.cardactivation/.MainActivity
 ```
 
+**No NFC (emulator)?** Debug builds accept a simulated tap and plain-http
+local servers. Grab a signed tap URL from the admin *Card emulator* (Simple
+tap shows the exact `lnurlw://` the card emits), forward the port, and send it:
+
+```bash
+adb reverse tcp:3305 tcp:3305
+adb shell "am start -n io.lawallet.cardactivation/.MainActivity --es sim_tap '<lnurlw://…/scan?p=…&c=…>'"
+```
+
 First launch asks for `READ_PHONE_STATE` (the ZCS SDK reads device identity during
 `sdkInit`). For a **signed release** build + zapstore publishing, see
 [`PUBLISHING.md`](PUBLISHING.md).
